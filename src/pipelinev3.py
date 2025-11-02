@@ -28,7 +28,7 @@ KAGGLE_FILE = "tiktok.csv"
 DATA_DIR = "./data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-LASTFM_API_KEY = "dc076f65a9c117cb52f6d8e88da750cc"
+LASTFM_API_KEY = "API_KEY"
 RANDOM_STATE = 42
 
 # NEW VIRAL CRITERIA (Breakthrough-based)
@@ -562,4 +562,5 @@ print("\n📊 Key Metrics Used:")
 print(f"   • Early engagement vs artist baseline ({VIRAL_CRITERIA['early_engagement_multiplier']}x)")
 print(f"   • Outperformance vs artist average ({VIRAL_CRITERIA['artist_outperformance_multiplier']}x)")
 print(f"   • Viral velocity ({VIRAL_CRITERIA['viral_engagement_threshold']:.1%} engagement ratio)")
+
 print("=" * 70)

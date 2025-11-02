@@ -14,7 +14,6 @@ def trigger():
     if data and data.get("trigger"):
         import random
         number = random.randint(1, 10)
-        print("🔔 Trigger detected from Wi-Fi Arduino! Sending event to web clients.")
         socketio.emit("trigger", {
             "song": f"Song Name {number}",
             "artist": "Artist Name"
