@@ -1,0 +1,14 @@
+log_early_listeners
+log_early_playcount
+log_artist_baseline
+listeners_vs_artist_mean
+listener_play_ratio
+fe_danceability
+fe_energy
+fe_valence
+fe_tempo
+fe_acousticness
+dance_x_energy
+party_score
+is_recent
+fe_has_tags
