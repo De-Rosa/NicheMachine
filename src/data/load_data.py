@@ -1,4 +1,4 @@
-__all__ = ["SpotipyAgent"]
+__all__ = ["get_videos"]
 
 import spotipy
 import os
@@ -201,13 +201,18 @@ class TiktokAgent:
             print_debug(f"Fetched total {len(momentum_videos)} unique videos.")
             return momentum_videos
 
-
-if __name__ == "__main__":
+def get_videos():
     tiktok_agent = TiktokAgent()
     music_agent = LastFmAcousticBrainzAgent()
 
-    momentum_videos = tiktok_agent.get_videos(limit=200)
+    momentum_videos = tiktok_agent.get_videos(limit=1000)
 
     results = fetch_music_details(momentum_videos, music_agent)
 
     print_videos_with_music_features(results)
+
+    return results
+
+if __name__ == "__main__":
+    print("This should not be ran from the command line.")
+    

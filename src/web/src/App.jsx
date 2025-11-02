@@ -1,33 +1,85 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import io from "socket.io-client";
 import "./App.css";
 import PrismaticBurst from "./js/prismatic-burst.jsx";
 import Orb from "./js/orb.jsx";
 import DarkVeil from "./js/DarkVeil.jsx";
 import SplitText from "./js/SplitText.jsx";
 
+const socket = io("http://localhost:5000");
+
 function App() {
   const [veilVisible, setVeilVisible] = useState(true);
   const [orbExpanded, setOrbExpanded] = useState(false);
   const [orbVisible, setOrbVisible] = useState(true);
+  const [orbOpacity, setOrbOpacity] = useState(1); // 👈 new for fade control
   const [showText, setShowText] = useState(false);
+  const [isAnimating, setIsAnimating] = useState(false);
 
-  // Function to start the transition sequence
+  const [songText, setSongText] = useState("");
+  const [subtitleText, setSubtitleText] = useState("");
+
   const startReveal = () => {
+    if (isAnimating) return;
+    setIsAnimating(true);
+
     // Fade veil out
     setVeilVisible(false);
 
-    // After 5 seconds, fade veil back in and expand/fade orb
+    // After 5 seconds, fade veil back in and expand orb
     setTimeout(() => {
       setVeilVisible(true);
       setOrbExpanded(true);
 
-      // After orb finishes expanding, hide orb and show text
+      // After orb expands, hide orb and show text
       setTimeout(() => {
-        setOrbVisible(false);
+        // Fade orb out
+        setOrbOpacity(0);
+        setTimeout(() => setOrbVisible(false), 1000);
+
+        // Show text
         setShowText(true);
-      }, 3000); // orb transition duration
+
+        // Keep text visible for 10 seconds, then reset
+        setTimeout(() => {
+          setShowText(false);
+          setOrbExpanded(false);
+
+          // Wait for fade transition, then show orb again
+          setTimeout(() => {
+            setOrbVisible(true);
+            // 👇 make orb fade back in smoothly
+            setTimeout(() => setOrbOpacity(1), 100); 
+            setIsAnimating(false); // ready for next trigger
+          }, 1500);
+        }, 10000);
+      }, 3000);
     }, 5000);
   };
+
+  useEffect(() => {
+    socket.on("trigger", (data) => {
+      console.log("Received from Python:", data);
+
+      if (isAnimating) {
+        console.log("Ignoring trigger — still animating.");
+        return;
+      }
+
+      // Update text from Python
+      const song = data.song || data.title || "Unknown Song";
+      const artist = data.artist || "Unknown Artist";
+      const subtitle = data.subtitle || "Triggered";
+
+      setSongText(`${song} - ${artist}`);
+      setSubtitleText(subtitle);
+
+      // Start the reveal animation
+      startReveal();
+    });
+
+    return () => socket.off("trigger");
+  }, [isAnimating]);
 
   return (
     <div
@@ -38,7 +90,7 @@ function App() {
         backgroundColor: "black",
       }}
     >
-      {/* PrismaticBurst Background */}
+      {/* Background */}
       <PrismaticBurst
         animationType="rotate3d"
         intensity={1.5}
@@ -58,21 +110,21 @@ function App() {
         }}
       />
 
-      {/* Dark Veil */}
+      {/* Veil */}
       <div
         style={{
           position: "absolute",
           inset: 0,
           opacity: veilVisible ? 1 : 0,
           transition: "opacity 1.5s ease-in-out",
-          pointerEvents: veilVisible ? "auto" : "none",
+          pointerEvents: "none",
           zIndex: 10,
         }}
       >
         <DarkVeil />
       </div>
 
-      {/* Centered Orb Overlay */}
+      {/* Orb */}
       {orbVisible && (
         <div
           style={{
@@ -80,21 +132,22 @@ function App() {
             top: "50%",
             left: "50%",
             transform: `translate(-50%, -50%) scale(${orbExpanded ? 5 : 1})`,
-            transition: "transform 3s ease-in-out, opacity 3s ease-in-out",
+            transition:
+              "transform 3s ease-in-out, opacity 2s ease-in-out",
+            opacity: orbOpacity, // 👈 smooth fade control
             width: "600px",
             height: "600px",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             zIndex: 20,
-            opacity: orbExpanded ? 0 : 1,
           }}
         >
-          <Orb hoverIntensity={0.5} rotateOnHover={true} hue={0} forceHoverState={false} />
+          <Orb hoverIntensity={0.5} rotateOnHover={true} hue={0} />
         </div>
       )}
 
-      {/* Main Text + Subtitle */}
+      {/* Text */}
       {showText && (
         <div
           style={{
@@ -102,19 +155,19 @@ function App() {
             top: "50%",
             left: "50%",
             transform: "translate(-50%, -50%)",
-            zIndex: 25,
             textAlign: "center",
+            zIndex: 25,
+            transition: "opacity 1s ease-in-out",
           }}
         >
-          {/* Main Text */}
           <SplitText
-            text="Song Name - Artist Name"
+            text={songText}
             delay={70}
             duration={2}
             ease="elastic.out(1, 0.3)"
             splitType="chars"
             from={{ opacity: 0, y: 40 }}
-            to={{ opacity: 1, y: 0 }}
+            to={{ opacity: 0.6, y: 0 }}
             threshold={0.1}
             rootMargin="-100px"
             textAlign="center"
@@ -127,7 +180,6 @@ function App() {
             }}
           />
 
-          {/* Subtitle / additional text */}
           <div
             style={{
               marginTop: "0.2rem",
@@ -137,31 +189,13 @@ function App() {
               color: "white",
               opacity: 0,
               animation: "fadeIn 2s ease forwards",
-              animationDelay: "2.5s", // starts after main text animation
+              animationDelay: "2.5s",
             }}
           >
-            Additional info or subtitle goes here
+            {subtitleText}
           </div>
         </div>
       )}
-
-      {/* Example button to trigger the transition */}
-      <button
-        onClick={startReveal}
-        style={{
-          position: "absolute",
-          bottom: "2rem",
-          left: "50%",
-          transform: "translateX(-50%)",
-          padding: "1rem 2rem",
-          fontSize: "1rem",
-          borderRadius: "0.5rem",
-          cursor: "pointer",
-          zIndex: 30,
-        }}
-      >
-        Start Reveal
-      </button>
     </div>
   );
 }
