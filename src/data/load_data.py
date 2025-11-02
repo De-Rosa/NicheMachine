@@ -10,7 +10,7 @@ from spotipy.oauth2 import SpotifyClientCredentials
 from TikTokApi import TikTokApi
 from dotenv import load_dotenv
 import logging
-from utils.data import (
+from src.utils.data import (
     has_non_english_letters,
     normalize_song_info,
     print_debug,

@@ -16,7 +16,7 @@ from datetime import datetime
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
-DATA_DIR = "./data"
+DATA_DIR = "./src/data"
 LASTFM_API_KEY = "dc076f65a9c117cb52f6d8e88da750cc"
 REQUEST_TIMEOUT = 10
 
@@ -509,46 +509,114 @@ def predict_breakthrough_viral(track_name, artist_name):
     }
 
 
-# -----------------------------
-# INTERACTIVE MODE
-# -----------------------------
 
-if __name__ == "__main__":
-    print("🎵 Breakthrough Viral Predictor")
-    print("=" * 70)
-    print("\nPredicts if a track will BREAKTHROUGH beyond artist's typical performance\n")
 
-    track_name = "Formidable"
-    artist_name = "Stromae"
+import pandas as pd
+import requests
+import os
+from dotenv import load_dotenv
+import time
 
-    if not track_name or not artist_name:
-        print("\n❌ Both track name and artist name are required")
-        exit(1)
+# ---------------- LAST.FM API CONFIG ----------------
+BASE = "https://ws.audioscrobbler.com/2.0/"
 
-    print()
+def get_lastfm_listeners(artist_name: str):
+    """Fetch listener and playcount info for an artist from Last.fm."""
+    try:
+        params = {
+            "method": "artist.getinfo",
+            "artist": artist_name,
+            "api_key": LASTFM_API_KEY,
+            "format": "json"
+        }
+        r = requests.get(BASE, params=params, timeout=5)
+        data = r.json()
 
-    result = predict_breakthrough_viral(track_name, artist_name)
+        if "artist" in data and "stats" in data["artist"]:
+            listeners = int(data["artist"]["stats"]["listeners"])
+            plays = int(data["artist"]["stats"]["playcount"])
+            return {"listeners": listeners, "plays": plays}
+    except Exception as e:
+        print(f"⚠️ Error fetching data for {artist_name}: {e}")
+    return None
 
-    if result:
-        save = input("\n💾 Save prediction? (y/n): ").strip().lower()
-        if save == 'y':
-            results_file = os.path.join(DATA_DIR, "breakthrough_predictions_log.csv")
 
-            prediction_record = {
-                "timestamp": datetime.now().isoformat(),
-                "track_name": track_name,
-                "artist_name": artist_name,
-                "breakthrough_probability": result["viral_probability"],
-                "verdict": result["verdict"],
-                "listeners": result["lastfm_data"]["lastfm_listeners"],
-                "vs_artist_mean": result["features"].get("listeners_vs_artist_mean", None)
-            }
+def is_niche_artist(artist_name: str, listener_threshold=1_000_000):
+    """Check if an artist is 'niche' based on listener count."""
+    info = get_lastfm_listeners(artist_name)
+    if not info:
+        return None, None
+    is_niche = info["listeners"] < listener_threshold
+    return is_niche, info
 
-            if os.path.exists(results_file):
-                log_df = pd.read_csv(results_file)
-                log_df = pd.concat([log_df, pd.DataFrame([prediction_record])], ignore_index=True)
-            else:
-                log_df = pd.DataFrame([prediction_record])
 
-            log_df.to_csv(results_file, index=False)
-            print(f"✅ Saved to {results_file}")
+# ---------------- VIRAL RANKING PIPELINE ----------------
+def rank_tracks_by_viral_probability(csv_path):
+    """
+    Reads a CSV of tracks, predicts viral probability for each track,
+    and returns a DataFrame sorted by viral_probability descending,
+    filtering only 'niche' artists based on Last.fm listener data.
+    """
+
+    df = pd.read_csv(csv_path)
+
+    # 🧹 STEP 1: Drop duplicates before anything else
+    df = df.drop_duplicates(subset=["song_title", "artist_name"]).reset_index(drop=True)
+
+    predictions = []
+    print(f"🎧 Loaded {len(df)} unique tracks for viral prediction...")
+
+    for _, row in df.iterrows():
+        track_name = row["song_title"]
+        artist_name = row["artist_name"]
+
+        # 1️⃣ Check if artist is niche
+        is_niche, stats = is_niche_artist(artist_name)
+        if is_niche is None:
+            print(f"⚠️ Skipping {artist_name} (no Last.fm data)")
+            continue
+        if not is_niche:
+            print(f"🚫 Skipping {artist_name} — too popular ({stats['listeners']:,} listeners)")
+            continue
+
+        print(f"✅ {artist_name} considered niche ({stats['listeners']:,} listeners). Predicting viral score...")
+
+        # 2️⃣ Predict breakthrough potential
+        result = predict_breakthrough_viral(track_name, artist_name)
+
+        if not result:
+            print(f"⚠️ Prediction failed for {track_name} by {artist_name}")
+            continue
+
+        # 3️⃣ Store combined info
+        predictions.append({
+            "song_title": track_name,
+            "artist_name": artist_name,
+            "viral_probability": result["viral_probability"],
+            "verdict": result["verdict"],
+            "confidence": result["confidence"],
+            "listeners": stats["listeners"],
+            "plays": stats["plays"]
+        })
+
+        # 🕒 Short sleep to avoid API rate limits
+        time.sleep(0.25)
+
+    # 4️⃣ Create DataFrame
+    if not predictions:
+        print("❌ No niche artists found, nothing to rank.")
+        return pd.DataFrame()
+
+    pred_df_sorted = (
+        pd.DataFrame(predictions)
+        .drop_duplicates(subset=["song_title", "artist_name"])  # 🧹 ensure unique before saving
+        .sort_values(by="viral_probability", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    # 5️⃣ Save to CSV
+    pred_df_sorted.to_csv("ranked.csv", index=False)
+    print(f"💾 Saved {len(pred_df_sorted)} niche-ranked tracks → ranked.csv")
+
+    return pred_df_sorted
+
