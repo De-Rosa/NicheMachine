@@ -39,7 +39,7 @@ KAGGLE_FILE = "tiktok.csv"
 DATA_DIR = "./data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-LASTFM_API_KEY = "dc076f65a9c117cb52f6d8e88da750cc"
+LASTFM_API_KEY = "API_KEY"
 PAST_YEARS = 3
 LABEL_WINDOW_DAYS = 30
 
@@ -459,5 +459,6 @@ else:
     model = lgb.train(params, lgb_train, num_boost_round=500)
     joblib.dump(model, os.path.join(DATA_DIR, "lgb_full_pipeline.pkl"))
     print("✅ LightGBM model trained and saved.")
+
 
 print("🏁 Full pipeline complete!")
