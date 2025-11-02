@@ -1,266 +1,307 @@
 """
-tiktok_lastfm_end_to_end_safe.py
+tiktok_import_and_train.py
 -----------------------------------
-Predict if a TikTok-trending song will go viral on SpotifyCharts
-using Last.fm metadata (no rate limits).
+Import pre-downloaded data and train viral prediction model.
+Skips all API calls - uses cached data only.
 """
 
 import os
-import time
 import joblib
-import requests
-import numpy as np
 import pandas as pd
 import lightgbm as lgb
-from io import StringIO
-from tqdm import tqdm
-from datetime import date, timedelta
-from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score, average_precision_score, classification_report
 
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
-KAGGLE_FILE = "tiktok.csv"
 DATA_DIR = "./data"
-os.makedirs(DATA_DIR, exist_ok=True)
-
-LASTFM_API_KEY = "YOUR_LASTFM_API_KEY"   # 🔑 <--- put your key here
-
-PAST_YEARS = 3
-LABEL_WINDOW_DAYS = 30
-STREAMS_GROWTH_THRESHOLD = 3.0
-MIN_TOTAL_STREAMS = 25_000_000
 RANDOM_STATE = 42
-REQUEST_DELAY = 0.3   # seconds between Last.fm requests
+
+# Last.fm-based thresholds
+MIN_TOTAL_PLAYCOUNT = 1_000_000  # 1M total plays
+MIN_LISTENERS = 50_000  # 50k unique listeners
+LISTENER_TO_PLAY_RATIO_MIN = 0.02  # At least 2% listener/play ratio
 
 # -----------------------------
-# 1. Load TikTok dataset
+# 1. Check for cached data files
 # -----------------------------
-print("📥 Loading TikTok Trending Tracks dataset...")
-kag = pd.read_csv(KAGGLE_FILE)
-kag.columns = [c.lower() for c in kag.columns]
+print("📂 Checking for cached data files...")
 
-track_col = "track_name" if "track_name" in kag.columns else "track"
-artist_col = "artist_name" if "artist_name" in kag.columns else "artist"
-date_col = "release_date"
-kag[date_col] = pd.to_datetime(kag[date_col], errors="coerce")
+required_files = {
+    "lastfm_metadata.csv": "Last.fm metadata",
+    "mbids.csv": "MusicBrainz IDs",
+    "acousticbrainz_features.csv": "AcousticBrainz features"
+}
 
-kag["combo"] = kag[track_col].str.lower().fillna('') + " - " + kag[artist_col].str.lower().fillna('')
-unique_tracks = kag.drop_duplicates(subset=["combo"])[[track_col, artist_col, date_col]].dropna()
-print(f"✅ Found {len(unique_tracks)} unique tracks.")
+missing_files = []
+for filename, description in required_files.items():
+    filepath = os.path.join(DATA_DIR, filename)
+    if os.path.exists(filepath):
+        print(f"✅ Found {description}: {filename}")
+    else:
+        print(f"❌ Missing {description}: {filename}")
+        missing_files.append(filename)
 
-# -----------------------------
-# 2. Fetch Last.fm metadata sequentially
-# -----------------------------
-print("🎧 Fetching Last.fm metadata sequentially (safe mode)...")
-BASE_URL = "http://ws.audioscrobbler.com/2.0/"
-
-def fetch_lastfm_metadata(title, artist):
-    """Fetch track + artist metadata from Last.fm sequentially."""
-    params = {
-        "method": "track.getInfo",
-        "api_key": LASTFM_API_KEY,
-        "artist": artist,
-        "track": title,
-        "format": "json"
-    }
-
-    try:
-        r = requests.get(BASE_URL, params=params, timeout=10)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        if "track" not in data:
-            return None
-
-        track = data["track"]
-        artist_name = track.get("artist", {}).get("name", artist)
-        listeners = int(track.get("listeners", 0))
-        playcount = int(track.get("playcount", 0))
-        duration = int(track.get("duration", 0)) / 1000 if track.get("duration") else np.nan
-        tags = [t["name"] for t in track.get("toptags", {}).get("tag", [])] if track.get("toptags") else []
-        num_tags = len(tags)
-
-        time.sleep(REQUEST_DELAY)
-        return {
-            "track_name": title,
-            "artist_name": artist_name,
-            "lastfm_listeners": listeners,
-            "lastfm_playcount": playcount,
-            "lastfm_duration_sec": duration,
-            "lastfm_tags": ", ".join(tags),
-            "lastfm_num_tags": num_tags
-        }
-
-    except Exception:
-        time.sleep(REQUEST_DELAY)
-        return None
-
-lastfm_results = []
-for _, row in tqdm(unique_tracks.iterrows(), total=len(unique_tracks), desc="Last.fm tracks"):
-    meta = fetch_lastfm_metadata(row[track_col], row[artist_col])
-    if meta:
-        lastfm_results.append(meta)
-
-lastfm_meta = pd.DataFrame(lastfm_results)
-lastfm_meta.to_csv(os.path.join(DATA_DIR, "lastfm_metadata.csv"), index=False)
-print(f"✅ Retrieved {len(lastfm_meta)} tracks with Last.fm metadata.")
-
-# -----------------------------
-# 3. SpotifyCharts data (public, safe)
-# -----------------------------
-print("📊 Downloading SpotifyCharts data sequentially...")
-
-def fetch_chart_day(d, region="global"):
-    url = f"https://spotifycharts.com/regional/{region}/daily/{d.isoformat()}/download"
-    try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            df = pd.read_csv(StringIO(resp.text), skiprows=1)
-            df["region"] = region
-            df["date"] = d
-            return df
-    except:
-        pass
-    return None
-
-start_date = date.today() - timedelta(days=PAST_YEARS * 365)
-end_date = date.today()
-
-dates = []
-d = start_date
-while d <= end_date:
-    dates.append(d)
-    d += timedelta(days=1)
-
-all_data = []
-for d in tqdm(dates, desc="SpotifyCharts"):
-    df = fetch_chart_day(d)
-    if df is not None:
-        all_data.append(df)
-    time.sleep(0.3)
-
-if not all_data:
-    print("❌ Failed to download chart data. Exiting.")
+if missing_files:
+    print(f"\n⚠️  Missing {len(missing_files)} required file(s).")
+    print("   Please run the full pipeline first to download data.")
     exit(1)
 
-spotify_charts = pd.concat(all_data, ignore_index=True)
-spotify_charts.to_csv(os.path.join(DATA_DIR, "spotify_time_series.csv"), index=False)
-print(f"✅ Downloaded {len(spotify_charts)} rows of SpotifyCharts data.")
+print("\n✅ All required data files found!")
 
 # -----------------------------
-# 4. Merge TikTok + Last.fm
+# 2. Load TikTok dataset
 # -----------------------------
-merged = pd.merge(unique_tracks, lastfm_meta, on=["track_name", "artist_name"], how="left")
-spotify_charts["spotify_id"] = spotify_charts["URL"].apply(lambda x: x.split("/")[-1] if isinstance(x, str) else None)
-spotify_charts["date"] = pd.to_datetime(spotify_charts["date"], errors="coerce")
+print("\n📥 Loading TikTok Trending Tracks dataset...")
+try:
+    kag = pd.read_csv("tiktok.csv")
+    kag.columns = [c.lower() for c in kag.columns]
 
-# -----------------------------
-# 5. Viral Label
-# -----------------------------
-print("🏷️ Building viral label (3× growth + 25M streams)...")
+    # Standardize column names
+    track_col = "track_name" if "track_name" in kag.columns else "track"
+    artist_col = "artist_name" if "artist_name" in kag.columns else "artist"
+    date_col = "release_date"
 
-labels = []
-for _, row in tqdm(merged.iterrows(), total=len(merged)):
-    tid = row.get("spotify_id")
-    if pd.isna(tid):
-        labels.append(np.nan)
-        continue
+    kag = kag.rename(columns={track_col: "track_name", artist_col: "artist_name"})
+    kag[date_col] = pd.to_datetime(kag[date_col], errors="coerce")
 
-    first_seen = pd.to_datetime(row[date_col])
-    if pd.isna(first_seen):
-        labels.append(np.nan)
-        continue
+    kag["combo"] = kag["track_name"].str.lower().fillna('') + " - " + kag["artist_name"].str.lower().fillna('')
+    unique_tracks = kag.drop_duplicates(subset=["combo"])[["track_name", "artist_name", date_col]].dropna()
 
-    label_cutoff = first_seen + pd.Timedelta(days=LABEL_WINDOW_DAYS)
-    df = spotify_charts[
-        (spotify_charts["spotify_id"] == tid) &
-        (spotify_charts["date"] >= first_seen) &
-        (spotify_charts["date"] <= label_cutoff)
-    ].sort_values("date").copy()
-
-    if len(df) < 2:
-        labels.append(0)
-        continue
-
-    df["streams_shift7"] = df["Streams"].shift(7)
-    df["pct_growth"] = (df["Streams"] - df["streams_shift7"]) / (df["streams_shift7"] + 1e-9)
-    max_growth = df["pct_growth"].max()
-    total_streams = df["Streams"].sum()
-
-    viral = int((max_growth > STREAMS_GROWTH_THRESHOLD) and (total_streams >= MIN_TOTAL_STREAMS))
-    labels.append(viral)
-
-merged["viral_label"] = labels
-merged.to_csv(os.path.join(DATA_DIR, "merged_tiktok_lastfm.csv"), index=False)
-print(f"✅ Created viral_label with {merged['viral_label'].sum()} viral songs out of {len(merged)} total.")
+    print(f"✅ Loaded {len(unique_tracks)} unique tracks from TikTok dataset.")
+except FileNotFoundError:
+    print("❌ tiktok.csv not found!")
+    exit(1)
 
 # -----------------------------
-# 6. Train LightGBM
+# 3. Load cached metadata
 # -----------------------------
-print("🎯 Training LightGBM classifier...")
+print("\n📖 Loading cached metadata...")
 
-train_df = merged.dropna(subset=["viral_label"])
+lastfm_meta = pd.read_csv(os.path.join(DATA_DIR, "lastfm_metadata.csv"))
+print(f"✅ Loaded {len(lastfm_meta)} Last.fm tracks")
+
+mbid_meta = pd.read_csv(os.path.join(DATA_DIR, "mbids.csv"))
+print(f"✅ Loaded {len(mbid_meta)} MBIDs ({mbid_meta['mbid'].notna().sum()} valid)")
+
+acoustic_meta = pd.read_csv(os.path.join(DATA_DIR, "acousticbrainz_features.csv"))
+print(f"✅ Loaded {len(acoustic_meta)} AcousticBrainz features")
+
+# -----------------------------
+# 4. Merge all datasets
+# -----------------------------
+print("\n🔄 Merging datasets...")
+
+merged = unique_tracks.copy()
+
+if len(lastfm_meta) > 0:
+    merged = merged.merge(lastfm_meta, on=["track_name", "artist_name"], how="left")
+if len(mbid_meta) > 0:
+    merged = merged.merge(mbid_meta, on=["track_name", "artist_name"], how="left")
+if len(acoustic_meta) > 0:
+    merged = merged.merge(acoustic_meta, on=["track_name", "artist_name"], how="left")
+
+print(f"✅ Merged dataset has {len(merged)} tracks")
+print(f"   - Tracks with Last.fm data: {merged['lastfm_playcount'].notna().sum()}")
+print(f"   - Tracks with MBID: {merged['mbid'].notna().sum()}")
+print(f"   - Tracks with acoustic features: {merged['acoustic_danceability'].notna().sum()}")
+
+# Save merged data
+merged.to_csv(os.path.join(DATA_DIR, "merged_full.csv"), index=False)
+
+# -----------------------------
+# 5. Build viral labels
+# -----------------------------
+print("\n🏷️ Building viral labels based on Last.fm metrics...")
+
+
+def calculate_viral_label(row):
+    """
+    Determine if a track went viral based on Last.fm metrics:
+    - High playcount (total plays)
+    - High listener count (unique users)
+    - Good engagement ratio (listeners/plays)
+    - Recency bonus for newer tracks
+    """
+    playcount = row.get("lastfm_playcount", 0)
+    listeners = row.get("lastfm_listeners", 0)
+    release_date = pd.to_datetime(row.get("release_date"))
+
+    # Convert to numeric if needed
+    try:
+        playcount = float(playcount) if pd.notna(playcount) else 0
+        listeners = float(listeners) if pd.notna(listeners) else 0
+    except:
+        playcount = 0
+        listeners = 0
+
+    # Basic thresholds
+    if playcount < MIN_TOTAL_PLAYCOUNT or listeners < MIN_LISTENERS:
+        return 0
+
+    # Engagement ratio (listeners/playcount)
+    engagement_ratio = listeners / (playcount + 1e-9)
+    if engagement_ratio < LISTENER_TO_PLAY_RATIO_MIN:
+        return 0  # Low engagement = not viral
+
+    # Recency bonus: tracks released in last 2 years get lower thresholds
+    if pd.notna(release_date):
+        days_since_release = (pd.Timestamp.now() - release_date).days
+        is_recent = days_since_release < 730  # Within 2 years
+
+        if is_recent:
+            # More lenient for recent tracks
+            viral_threshold_playcount = MIN_TOTAL_PLAYCOUNT * 0.7
+            viral_threshold_listeners = MIN_LISTENERS * 0.7
+        else:
+            # Stricter for older tracks
+            viral_threshold_playcount = MIN_TOTAL_PLAYCOUNT * 1.5
+            viral_threshold_listeners = MIN_LISTENERS * 1.5
+
+        if playcount >= viral_threshold_playcount and listeners >= viral_threshold_listeners:
+            return 1
+    else:
+        # No release date, use standard thresholds
+        if playcount >= MIN_TOTAL_PLAYCOUNT and listeners >= MIN_LISTENERS:
+            return 1
+
+    return 0
+
+
+# Calculate labels
+merged["viral_label"] = merged.apply(calculate_viral_label, axis=1)
+
+# Add additional metrics for analysis
+merged["listener_play_ratio"] = merged["lastfm_listeners"] / (merged["lastfm_playcount"] + 1e-9)
+merged["days_since_release"] = (pd.Timestamp.now() - pd.to_datetime(merged["release_date"])).dt.days
+
+# Save labeled data
+merged.to_csv(os.path.join(DATA_DIR, "merged_labeled.csv"), index=False)
+
+print(f"✅ Viral labels assigned: {merged['viral_label'].sum()} viral tracks out of {len(merged)}")
+print(f"   Viral rate: {100 * merged['viral_label'].sum() / len(merged):.1f}%")
+
+# Show distribution
+print("\n📊 Label Distribution:")
+print(merged['viral_label'].value_counts())
+
+# -----------------------------
+# 6. Train LightGBM classifier
+# -----------------------------
+print("\n🎯 Training LightGBM classifier...")
+
+# Prepare training data
+train_df = merged.dropna(subset=["viral_label"]).copy()
 train_df["viral_label"] = train_df["viral_label"].astype(int)
 
+# Define features
 feature_cols = [
-    "lastfm_listeners",
-    "lastfm_playcount",
-    "lastfm_duration_sec",
-    "lastfm_num_tags"
+    "lastfm_listeners", "lastfm_playcount",
+    "listener_play_ratio",  # Engagement metric
+    "acoustic_danceability", "acoustic_tempo",
+    "acoustic_energy", "acoustic_valence"
 ]
-
 feature_cols = [f for f in feature_cols if f in train_df.columns]
+
+# Remove rows with missing features
 X = train_df[feature_cols].fillna(0)
 y = train_df["viral_label"]
 
+print(f"\n📈 Training Data Summary:")
+print(f"   Total samples: {len(X)}")
+print(f"   Features: {len(feature_cols)}")
+print(f"   Positive samples (viral): {y.sum()}")
+print(f"   Negative samples (not viral): {len(y) - y.sum()}")
+print(f"   Class balance: {100 * y.sum() / len(y):.1f}% viral")
+
 if len(y.unique()) < 2:
-    print("⚠️ Not enough samples to train model.")
-else:
-    params = {
-        "objective": "binary",
-        "metric": "auc",
-        "boosting_type": "gbdt",
-        "num_leaves": 31,
-        "learning_rate": 0.05,
-        "feature_fraction": 0.8,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 5,
-        "verbosity": -1,
-        "is_unbalance": True,
-        "seed": RANDOM_STATE
-    }
+    print("\n⚠️ Not enough positive/negative samples to train model.")
+    print("   Try lowering the thresholds (MIN_TOTAL_PLAYCOUNT, MIN_LISTENERS)")
+    exit(1)
 
-    train_x, val_x, train_y, val_y = train_test_split(
-        X, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y
-    )
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y
+)
 
-    lgb_train = lgb.Dataset(train_x, label=train_y)
-    lgb_val = lgb.Dataset(val_x, label=val_y)
+print(f"\n✂️ Train/Test Split:")
+print(f"   Training: {len(X_train)} samples ({y_train.sum()} viral)")
+print(f"   Testing: {len(X_test)} samples ({y_test.sum()} viral)")
 
-    model = lgb.train(
-        params,
-        lgb_train,
-        valid_sets=[lgb_train, lgb_val],
-        num_boost_round=1000,
-        callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)],
-    )
+# Train model
+print("\n🚀 Training LightGBM model...")
+lgb_train = lgb.Dataset(X_train, label=y_train)
+lgb_test = lgb.Dataset(X_test, label=y_test, reference=lgb_train)
 
-    preds = model.predict(val_x, num_iteration=model.best_iteration)
-    auc = roc_auc_score(val_y, preds)
-    pr = average_precision_score(val_y, preds)
+params = {
+    "objective": "binary",
+    "metric": "auc",
+    "boosting_type": "gbdt",
+    "num_leaves": 31,
+    "learning_rate": 0.05,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 5,
+    "verbosity": -1,
+    "is_unbalance": True,
+    "seed": RANDOM_STATE,
+    "device": "cpu"
+}
 
-    print(f"✅ Model Performance: AUC={auc:.4f}, PR-AUC={pr:.4f}")
-    joblib.dump(model, os.path.join(DATA_DIR, "lgb_tiktok_lastfm.pkl"))
-    print("💾 Model saved to ./data/lgb_tiktok_lastfm.pkl")
+model = lgb.train(
+    params,
+    lgb_train,
+    num_boost_round=500,
+    valid_sets=[lgb_train, lgb_test],
+    valid_names=["train", "test"],
+    callbacks=[lgb.early_stopping(stopping_rounds=50), lgb.log_evaluation(period=100)]
+)
 
-    importance = pd.DataFrame({
-        "feature": feature_cols,
-        "importance": model.feature_importance()
-    }).sort_values("importance", ascending=False)
+# -----------------------------
+# 7. Evaluate model
+# -----------------------------
+print("\n📊 Evaluating model...")
 
-    print("\n🏆 Top predictive features:")
-    print(importance)
+y_pred_proba = model.predict(X_test, num_iteration=model.best_iteration)
+y_pred = (y_pred_proba >= 0.5).astype(int)
 
-print("🏁 Done! Sequential Last.fm version complete.")
+# Metrics
+auc = roc_auc_score(y_test, y_pred_proba)
+ap = average_precision_score(y_test, y_pred_proba)
+
+print(f"\n✅ Model Performance:")
+print(f"   ROC-AUC Score: {auc:.4f}")
+print(f"   Average Precision: {ap:.4f}")
+print(f"\n📋 Classification Report:")
+print(classification_report(y_test, y_pred, target_names=["Not Viral", "Viral"]))
+
+# Feature importance
+print("\n🎯 Top 10 Most Important Features:")
+feature_importance = pd.DataFrame({
+    'feature': feature_cols,
+    'importance': model.feature_importance(importance_type='gain')
+}).sort_values('importance', ascending=False)
+
+for idx, row in feature_importance.head(10).iterrows():
+    print(f"   {row['feature']:30s}: {row['importance']:,.0f}")
+
+# -----------------------------
+# 8. Save model
+# -----------------------------
+model_path = os.path.join(DATA_DIR, "lgb_viral_predictor.pkl")
+joblib.dump(model, model_path)
+print(f"\n💾 Model saved to: {model_path}")
+
+# Save feature list
+feature_list_path = os.path.join(DATA_DIR, "feature_list.txt")
+with open(feature_list_path, 'w') as f:
+    f.write('\n'.join(feature_cols))
+print(f"💾 Feature list saved to: {feature_list_path}")
+
+print("\n🏁 Pipeline complete! Model ready for predictions.")
+print(f"\n📁 Output files in {DATA_DIR}:")
+print(f"   - merged_full.csv: All merged data")
+print(f"   - merged_labeled.csv: Data with viral labels")
+print(f"   - lgb_viral_predictor.pkl: Trained model")
+print(f"   - feature_list.txt: List of features")
