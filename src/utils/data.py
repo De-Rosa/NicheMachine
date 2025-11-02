@@ -102,19 +102,19 @@ def print_videos_with_music_features(videos: list[dict]):
     """Pretty-print enriched music data."""
     for idx, v in enumerate(videos, 1):
         print(f"#{idx}: {v['likes']:,} likes | {v['views']:,} views | {v['engagement_rate']:.2%}")
-        print(f"  🎵 {v['song_title']} - {v['artist_name']}")
-        print(f"  💿 Album: {v.get('lastfm_album', 'Unknown')}")
-        print(f"  🔗 Last.fm: {v.get('lastfm_link', 'N/A')}")
-        print(f"  👂 Listeners: {v.get('listeners', '0')}")
-        print(f"  ▶️ Playcount: {v.get('playcount', '0')}")
-        print(f"  🏷️ Tags: {', '.join(v.get('tags', []))}")
+        print(f"  {v['song_title']} - {v['artist_name']}")
+        print(f"  Album: {v.get('lastfm_album', 'Unknown')}")
+        print(f"  Last.fm: {v.get('lastfm_link', 'N/A')}")
+        print(f"  Listeners: {v.get('listeners', '0')}")
+        print(f"  Playcount: {v.get('playcount', '0')}")
+        print(f"  Tags: {', '.join(v.get('tags', []))}")
         af = v.get("audio_features")
         if af:
-            print("  🎚️ Audio Features:")
+            print("  Audio Features:")
             for k, val in af.items():
                 print(f"    - {k}: {val}")
         else:
-            print("  🎚️ Audio Features: unavailable")
+            print("  Audio Features: unavailable")
         print("\n")
 
 def print_videos_with_lastfm_features(videos: list[dict]):
@@ -123,11 +123,11 @@ def print_videos_with_lastfm_features(videos: list[dict]):
     """
     for idx, v in enumerate(videos, 1):
         print(f"#{idx}: {v['likes']:,} likes | {v['views']:,} views | {v['engagement_rate']:.2%}")
-        print(f"  🎵 {v['song_title']} - {v['artist_name']}")
-        print(f"  🆔 {v['video_id']}")
-        print(f"  ✍️ {v['description']}")
-        print(f"  🔗 Last.fm: {v.get('lastfm_link', 'N/A')}")
-        print(f"  💿 Album: {v.get('lastfm_album', 'Unknown')}")
-        print(f"  👂 Listeners: {v.get('lastfm_listeners', '0')}")
-        print(f"  ▶️ Playcount: {v.get('lastfm_playcount', '0')}")
+        print(f"  {v['song_title']} - {v['artist_name']}")
+        print(f"  {v['video_id']}")
+        print(f"  {v['description']}")
+        print(f"  Last.fm: {v.get('lastfm_link', 'N/A')}")
+        print(f"  Album: {v.get('lastfm_album', 'Unknown')}")
+        print(f"  Listeners: {v.get('lastfm_listeners', '0')}")
+        print(f"  Playcount: {v.get('lastfm_playcount', '0')}")
         print("\n")
