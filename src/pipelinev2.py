@@ -27,7 +27,7 @@ KAGGLE_FILE = "tiktok.csv"
 DATA_DIR = "./data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-LASTFM_API_KEY = "dc076f65a9c117cb52f6d8e88da750cc"
+LASTFM_API_KEY = "API_KEY"
 RANDOM_STATE = 42
 
 # Viral thresholds
@@ -546,4 +546,5 @@ print("\n📊 Key Achievements:")
 print(f"   ✅ Engineered {len([f for f in feature_cols if f.startswith('fe_')])} acoustic features from Last.fm tags")
 print(f"   ✅ Created {len(feature_cols)} total predictive features")
 print(f"   ✅ Trained model with AUC: {auc:.4f}")
+
 print(f"   ✅ No Spotify API required!")
